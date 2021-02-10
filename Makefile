@@ -36,6 +36,7 @@ OBJS = \
   $K/kernelvec.o \
   $K/plic.o \
   $K/virtio_disk.o \
+  $K/sysinfo.o \
 
 ifeq ($(LAB),pgtbl)
 OBJS += $K/vmcopyin.o
@@ -150,6 +151,7 @@ UPROGS=\
 	$U/_wc\
 	$U/_zombie\
 	$U/_trace\
+	$U/_sysinfotest\
 
 
 ifeq ($(LAB),trap)
@@ -178,7 +180,7 @@ fs.img: mkfs/mkfs README $(UEXTRA) $(UPROGS)
 
 -include kernel/*.d user/*.d
 
-all: fs.img
+all: $K/kernel fs.img
 
 clean: 
 	rm -f *.tex *.dvi *.idx *.aux *.log *.ind *.ilg \
