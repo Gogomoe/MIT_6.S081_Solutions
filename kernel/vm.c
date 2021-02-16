@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -44,6 +46,36 @@ kvminit() {
     // map the trampoline for trap entry/exit to
     // the highest virtual address in the kernel.
     kvmmap(TRAMPOLINE, (uint64) trampoline, PGSIZE, PTE_R | PTE_X);
+}
+
+pagetable_t
+proc_kvminit() {
+    pagetable_t kpagetable = (pagetable_t) kalloc();
+    memset(kpagetable, 0, PGSIZE);
+
+    // uart registers
+    proc_kvmmap(kpagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+
+    // virtio mmio disk interface
+    proc_kvmmap(kpagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+
+    // CLINT
+    proc_kvmmap(kpagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+
+    // PLIC
+    proc_kvmmap(kpagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+
+    // map kernel text executable and read-only.
+    proc_kvmmap(kpagetable, KERNBASE, KERNBASE, (uint64) etext - KERNBASE, PTE_R | PTE_X);
+
+    // map kernel data and the physical RAM we'll make use of.
+    proc_kvmmap(kpagetable, (uint64) etext, (uint64) etext, PHYSTOP - (uint64) etext, PTE_R | PTE_W);
+
+    // map the trampoline for trap entry/exit to
+    // the highest virtual address in the kernel.
+    proc_kvmmap(kpagetable, TRAMPOLINE, (uint64) trampoline, PGSIZE, PTE_R | PTE_X);
+
+    return kpagetable;
 }
 
 // Switch h/w page table register to the kernel's page table,
@@ -116,6 +148,12 @@ kvmmap(uint64 va, uint64 pa, uint64 sz, int perm) {
         panic("kvmmap");
 }
 
+void
+proc_kvmmap(pagetable_t kpagetable, uint64 va, uint64 pa, uint64 sz, int perm) {
+    if (mappages(kpagetable, va, sz, pa, perm) != 0)
+        panic("proc_kvmmap");
+}
+
 // translate a kernel virtual address to
 // a physical address. only needed for
 // addresses on the stack.
@@ -126,7 +164,7 @@ kvmpa(uint64 va) {
     pte_t *pte;
     uint64 pa;
 
-    pte = walk(kernel_pagetable, va, 0);
+    pte = walk(myproc()->kpagetable, va, 0);
     if (pte == 0)
         panic("kvmpa");
     if ((*pte & PTE_V) == 0)

@@ -168,6 +168,11 @@ void            uvminit(pagetable_t, uchar *, uint);
 uint64          uvmalloc(pagetable_t, uint64, uint64);
 uint64          uvmdealloc(pagetable_t, uint64, uint64);
 void            vmprint(pagetable_t);
+pagetable_t     proc_kvminit();
+void            proc_kvmmap(pagetable_t, uint64, uint64, uint64, int);
+
+extern pagetable_t kernel_pagetable;
+extern char etext[];
 
 #ifdef SOL_COW
 #else
