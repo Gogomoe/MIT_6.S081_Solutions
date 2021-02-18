@@ -75,7 +75,24 @@ proc_kvminit() {
     // the highest virtual address in the kernel.
     proc_kvmmap(kpagetable, TRAMPOLINE, (uint64) trampoline, PGSIZE, PTE_R | PTE_X);
 
+    char *pa = kalloc();
+    if (pa == 0)
+        panic("kalloc");
+    proc_kvmmap(kpagetable, KSTACK(0), (uint64) pa, PGSIZE, PTE_R | PTE_W);
+
     return kpagetable;
+}
+
+void
+proc_kvmunmap(pagetable_t kpagetable) {
+    uvmunmap(kpagetable, UART0, 1, 0);
+    uvmunmap(kpagetable, VIRTIO0, 1, 0);
+    uvmunmap(kpagetable, CLINT, PGROUNDUP(0x10000) / PGSIZE, 0);
+    uvmunmap(kpagetable, PLIC, PGROUNDUP(0x400000) / PGSIZE, 0);
+    uvmunmap(kpagetable, KERNBASE, PGROUNDUP((uint64) etext - KERNBASE) / PGSIZE, 0);
+    uvmunmap(kpagetable, (uint64) etext, PGROUNDUP(PHYSTOP - (uint64) etext) / PGSIZE, 0);
+    uvmunmap(kpagetable, TRAMPOLINE, 1, 0);
+    uvmunmap(kpagetable, KSTACK(0), 1, 1);
 }
 
 // Switch h/w page table register to the kernel's page table,

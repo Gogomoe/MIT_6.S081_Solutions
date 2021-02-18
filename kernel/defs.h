@@ -92,6 +92,7 @@ int             fork(void);
 int             growproc(int);
 pagetable_t     proc_pagetable(struct proc *);
 void            proc_freepagetable(pagetable_t, uint64);
+void            proc_freekpagetable(pagetable_t, uint64);
 int             kill(int);
 struct cpu*     mycpu(void);
 struct cpu*     getmycpu(void);
@@ -170,9 +171,10 @@ uint64          uvmdealloc(pagetable_t, uint64, uint64);
 void            vmprint(pagetable_t);
 pagetable_t     proc_kvminit();
 void            proc_kvmmap(pagetable_t, uint64, uint64, uint64, int);
+void            proc_kvmunmap(pagetable_t);
+void            freewalk(pagetable_t);
 
 extern pagetable_t kernel_pagetable;
-extern char etext[];
 
 #ifdef SOL_COW
 #else

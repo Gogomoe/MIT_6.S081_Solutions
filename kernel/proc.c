@@ -118,13 +118,7 @@ allocproc(void) {
         release(&p->lock);
         return 0;
     }
-
-    char *pa = kalloc();
-    if (pa == 0)
-        panic("kalloc");
-    uint64 va = KSTACK((int) (p - proc));
-    proc_kvmmap(p->kpagetable, va, (uint64) pa, PGSIZE, PTE_R | PTE_W);
-    p->kstack = va;
+    p->kstack = KSTACK((int) (0));
 
     // An empty user page table.
     p->pagetable = proc_pagetable(p);
@@ -143,18 +137,12 @@ allocproc(void) {
     return p;
 }
 
-static void
-proc_freekpagetable(pagetable_t kpagetable) {
-
-    uvmunmap(kpagetable, UART0, 1, 0);
-    uvmunmap(kpagetable, VIRTIO0, 1, 0);
-    uvmunmap(kpagetable, CLINT, PGROUNDUP(0x10000) / PGSIZE, 0);
-    uvmunmap(kpagetable, PLIC, PGROUNDUP(0x400000) / PGSIZE, 0);
-    uvmunmap(kpagetable, KERNBASE, PGROUNDUP((uint64) etext - KERNBASE) / PGSIZE, 0);
-    uvmunmap(kpagetable, (uint64) etext, PGROUNDUP(PHYSTOP - (uint64) etext) / PGSIZE, 0);
-    uvmunmap(kpagetable, TRAMPOLINE, 1, 0);
-
-    uvmfree(kpagetable, 0);
+void
+proc_freekpagetable(pagetable_t kpagetable, uint64 sz) {
+    proc_kvmunmap(kpagetable);
+    if (sz > 0)
+        uvmunmap(kpagetable, 0, PGROUNDUP(sz) / PGSIZE, 0);
+    freewalk(kpagetable);
 }
 
 // free a proc structure and the data hanging from it,
@@ -165,11 +153,9 @@ freeproc(struct proc *p) {
     if (p->trapframe)
         kfree((void *) p->trapframe);
     p->trapframe = 0;
-    if (p->kstack)
-        uvmunmap(p->kpagetable, p->kstack, 1, 1);
-    p->kstack = 0;
     if (p->kpagetable)
-        proc_freekpagetable(p->kpagetable);
+        proc_freekpagetable(p->kpagetable, 0);
+    p->kstack = 0;
     p->kpagetable = 0;
     if (p->pagetable)
         proc_freepagetable(p->pagetable, p->sz);
@@ -504,6 +490,8 @@ scheduler(void) {
                 // Process is done running for now.
                 // It should have changed its p->state before coming back.
                 c->proc = 0;
+                w_satp(MAKE_SATP(kernel_pagetable));
+                sfence_vma();
 
                 found = 1;
             }
@@ -512,10 +500,6 @@ scheduler(void) {
 #if !defined (LAB_FS)
         if (found == 0) {
             intr_on();
-
-            w_satp(MAKE_SATP(kernel_pagetable));
-            sfence_vma();
-
             asm volatile("wfi");
         }
 #else
