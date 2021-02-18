@@ -170,9 +170,9 @@ uint64          uvmalloc(pagetable_t, pagetable_t, uint64, uint64);
 uint64          uvmdealloc(pagetable_t, pagetable_t, uint64, uint64);
 void            vmprint(pagetable_t);
 pagetable_t     proc_kvminit();
-void            proc_kvmmap(pagetable_t, uint64, uint64, uint64, int);
 void            proc_kvmunmap(pagetable_t);
 void            freewalk(pagetable_t);
+void            freewalk_force(pagetable_t);
 
 extern pagetable_t kernel_pagetable;
 

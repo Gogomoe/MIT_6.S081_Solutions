@@ -51,43 +51,56 @@ kvminit() {
 pagetable_t
 proc_kvminit() {
     pagetable_t kpagetable = (pagetable_t) kalloc();
+    char *kstack = kalloc();
+
+    if (kpagetable == 0) {
+        goto proc_kvminit_err;
+    }
+
+    if (kstack == 0) {
+        goto proc_kvminit_err;
+    }
+
     memset(kpagetable, 0, PGSIZE);
 
-    // uart registers
-    proc_kvmmap(kpagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+    #define MAP_ITEMS 7
+    uint64 maps[MAP_ITEMS][4] = {
+            // va  ,  pa  ,  size  ,  perm
+            {UART0,          UART0,               PGSIZE,                    PTE_R | PTE_W},
+            {VIRTIO0,        VIRTIO0,             PGSIZE,                    PTE_R | PTE_W},
+            {PLIC,           PLIC,                0x400000,                  PTE_R | PTE_W},
+            {KERNBASE,       KERNBASE,            (uint64) etext - KERNBASE, PTE_R | PTE_X},
+            {(uint64) etext, (uint64) etext,      PHYSTOP - (uint64) etext,  PTE_R | PTE_W},
+            {TRAMPOLINE,     (uint64) trampoline, PGSIZE,                    PTE_R | PTE_X},
+            {KSTACK(0),   (uint64) kstack,     PGSIZE,                    PTE_R | PTE_W}
+    };
 
-    // virtio mmio disk interface
-    proc_kvmmap(kpagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
-
-    // CLINT
-    proc_kvmmap(kpagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
-
-    // PLIC
-    proc_kvmmap(kpagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
-
-    // map kernel text executable and read-only.
-    proc_kvmmap(kpagetable, KERNBASE, KERNBASE, (uint64) etext - KERNBASE, PTE_R | PTE_X);
-
-    // map kernel data and the physical RAM we'll make use of.
-    proc_kvmmap(kpagetable, (uint64) etext, (uint64) etext, PHYSTOP - (uint64) etext, PTE_R | PTE_W);
-
-    // map the trampoline for trap entry/exit to
-    // the highest virtual address in the kernel.
-    proc_kvmmap(kpagetable, TRAMPOLINE, (uint64) trampoline, PGSIZE, PTE_R | PTE_X);
-
-    char *pa = kalloc();
-    if (pa == 0)
-        panic("kalloc");
-    proc_kvmmap(kpagetable, KSTACK(0), (uint64) pa, PGSIZE, PTE_R | PTE_W);
+    for (int i = 0; i < MAP_ITEMS; i++) {
+        uint64 (*p)[4] = &(maps[i]);
+        if (mappages(kpagetable, (*p)[0], (*p)[2], (*p)[1], (int) (*p)[3]) != 0) {
+            goto proc_kvminit_err;
+        }
+    }
+    #undef MAP_ITEMS
 
     return kpagetable;
+
+    proc_kvminit_err:
+    if (kstack) {
+        kfree(kstack);
+    }
+    if (kpagetable) {
+        freewalk_force(kpagetable);
+    }
+    return 0;
+
 }
 
 void
 proc_kvmunmap(pagetable_t kpagetable) {
     uvmunmap(kpagetable, UART0, 1, 0);
     uvmunmap(kpagetable, VIRTIO0, 1, 0);
-    uvmunmap(kpagetable, CLINT, PGROUNDUP(0x10000) / PGSIZE, 0);
+    // uvmunmap(kpagetable, CLINT, PGROUNDUP(0x10000) / PGSIZE, 0);
     uvmunmap(kpagetable, PLIC, PGROUNDUP(0x400000) / PGSIZE, 0);
     uvmunmap(kpagetable, KERNBASE, PGROUNDUP((uint64) etext - KERNBASE) / PGSIZE, 0);
     uvmunmap(kpagetable, (uint64) etext, PGROUNDUP(PHYSTOP - (uint64) etext) / PGSIZE, 0);
@@ -165,11 +178,6 @@ kvmmap(uint64 va, uint64 pa, uint64 sz, int perm) {
         panic("kvmmap");
 }
 
-void
-proc_kvmmap(pagetable_t kpagetable, uint64 va, uint64 pa, uint64 sz, int perm) {
-    if (mappages(kpagetable, va, sz, pa, perm) != 0)
-        panic("proc_kvmmap");
-}
 
 // translate a kernel virtual address to
 // a physical address. only needed for
@@ -279,7 +287,7 @@ uvmalloc(pagetable_t pagetable, pagetable_t kpagetable, uint64 oldsz, uint64 new
     if (newsz < oldsz)
         return oldsz;
 
-    if (newsz >= CLINT) {
+    if (PGROUNDUP(newsz) >= PLIC) {
         return 0;
     }
 
@@ -335,6 +343,23 @@ freewalk(pagetable_t pagetable) {
             pagetable[i] = 0;
         } else if (pte & PTE_V) {
             panic("freewalk: leaf");
+        }
+    }
+    kfree((void *) pagetable);
+}
+
+void
+freewalk_force(pagetable_t pagetable) {
+    // there are 2^9 = 512 PTEs in a page table.
+    for (int i = 0; i < 512; i++) {
+        pte_t pte = pagetable[i];
+        if ((pte & PTE_V) && (pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+            // this PTE points to a lower-level page table.
+            uint64 child = PTE2PA(pte);
+            freewalk_force((pagetable_t) child);
+            pagetable[i] = 0;
+        } else if (pte & PTE_V) {
+            pagetable[i] = 0;
         }
     }
     kfree((void *) pagetable);

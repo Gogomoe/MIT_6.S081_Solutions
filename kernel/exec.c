@@ -29,6 +29,10 @@ exec(char *path, char **argv) {
     }
     ilock(ip);
 
+    if (kpagetable == 0) {
+        goto bad;
+    }
+
     // Check ELF header
     if (readi(ip, 0, (uint64) &elf, 0, sizeof(elf)) != sizeof(elf))
         goto bad;
@@ -129,6 +133,8 @@ exec(char *path, char **argv) {
     bad:
     if (pagetable)
         proc_freepagetable(pagetable, sz);
+    if (kpagetable)
+        proc_freekpagetable(kpagetable, sz);
     if (ip) {
         iunlockput(ip);
         end_op();
