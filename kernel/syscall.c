@@ -68,6 +68,7 @@ int
 argaddr(int n, uint64 *ip)
 {
   *ip = argraw(n);
+  lazyensure(*ip, 1);
   return 0;
 }
 

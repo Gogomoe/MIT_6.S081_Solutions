@@ -265,6 +265,7 @@ fork(void) {
         return -1;
     }
     np->sz = p->sz;
+    np->stackbase = p->stackbase;
 
     np->parent = p;
 
@@ -670,4 +671,46 @@ procdump(void) {
         printf("%d %s %s", p->pid, state, p->name);
         printf("\n");
     }
+}
+
+//int lazyensure(uint64 addr, int size) {
+//    struct proc *p = myproc();
+//
+//    uint64 end = addr + size;
+//    if (end >= p->sz || addr < p->stackbase) {
+//        return -1;
+//    }
+//
+//    for (uint64 a = PGROUNDDOWN(addr); a < end; a += PGSIZE) {
+//        if (walkaddr(p->pagetable, a) != 0) {
+//            continue;
+//        }
+//        char *mem = kalloc();
+//        if (mem == 0) {
+//            return -1;
+//        }
+//        mappages(p->pagetable, a, PGSIZE, (uint64) mem, PTE_W | PTE_X | PTE_R | PTE_U);
+//    }
+//
+//    return 0;
+//}
+
+int lazyensure(uint64 addr, int size) {
+    struct proc *p = myproc();
+
+    if (addr >= p->sz || addr < p->stackbase) {
+        return -1;
+    }
+
+    if (walkaddr(p->pagetable, addr) != 0) {
+        return 0;
+    }
+
+    char *mem = kalloc();
+    if (mem == 0) {
+        return -1;
+    }
+    mappages(p->pagetable, PGROUNDDOWN(addr), PGSIZE, (uint64) mem, PTE_W | PTE_X | PTE_R | PTE_U);
+
+    return 0;
 }

@@ -67,18 +67,14 @@ usertrap(void) {
 
         uint64 addr = r_stval();
 
-        if (addr < p->sz) {
-            char *mem = kalloc();
-            mappages(p->pagetable, PGROUNDDOWN(addr), PGSIZE, (uint64) mem, PTE_W | PTE_X | PTE_R | PTE_U);
-        } else {
-            printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
-            printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-            p->killed = 1;
+        if (lazyensure(addr, 1)) {
+            goto err;
         }
 
     } else if ((which_dev = devintr()) != 0) {
         // ok
     } else {
+        err:
         printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
         printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
         p->killed = 1;
