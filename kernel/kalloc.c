@@ -15,6 +15,10 @@ void freerange(void *pa_start, void *pa_end);
 
 void kfree_force(void *pa);
 
+void increase_ref_unlock(uint64 pa);
+
+void decrease_ref_unlock(uint64 pa);
+
 extern char end[]; // first address after kernel.
 // defined by kernel.ld.
 
@@ -39,8 +43,10 @@ void
 freerange(void *pa_start, void *pa_end) {
     char *p;
     p = (char *) PGROUNDUP((uint64) pa_start);
+    acquire(&kmem.lock);
     for (; p + PGSIZE <= (char *) pa_end; p += PGSIZE)
         kfree_force(p);
+    release(&kmem.lock);
 }
 
 // Free the page of physical memory pointed at by v,
@@ -52,15 +58,17 @@ kfree(void *pa) {
     if (((uint64) pa % PGSIZE) != 0 || (char *) pa < end || (uint64) pa >= PHYSTOP)
         panic("kfree");
 
+    acquire(&kmem.lock);
+
     if (page_ref[PA2REFI((uint64) pa)] == 0) {
         panic("kfree ref");
     }
-    decrease_ref((uint64) pa);
-    if (page_ref[PA2REFI((uint64) pa)] != 0) {
-        return;
+    decrease_ref_unlock((uint64) pa);
+    if (page_ref[PA2REFI((uint64) pa)] == 0) {
+        kfree_force(pa);
     }
 
-    kfree_force(pa);
+    release(&kmem.lock);
 }
 
 void kfree_force(void *pa) {
@@ -71,10 +79,8 @@ void kfree_force(void *pa) {
 
     r = (struct run *) pa;
 
-    acquire(&kmem.lock);
     r->next = kmem.freelist;
     kmem.freelist = r;
-    release(&kmem.lock);
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -85,31 +91,51 @@ kalloc(void) {
     struct run *r;
 
     acquire(&kmem.lock);
-    r = kmem.freelist;
-    if (r)
-        kmem.freelist = r->next;
-    release(&kmem.lock);
 
+    r = kmem.freelist;
     if (r) {
+        kmem.freelist = r->next;
         memset((char *) r, 5, PGSIZE); // fill with junk
 
         uint64 pa = (uint64) r;
         if (page_ref[PA2REFI(pa)] != 0) {
             panic("kalloc ref");
         }
-        increase_ref(pa);
+        increase_ref_unlock(pa);
     }
+
+    release(&kmem.lock);
+
     return (void *) r;
 }
 
 void increase_ref(uint64 pa) {
+    acquire(&kmem.lock);
+    if (page_ref[PA2REFI(pa)] == 255) {
+        panic("increase_ref");
+    }
+    page_ref[PA2REFI(pa)]++;
+    release(&kmem.lock);
+}
+
+void decrease_ref(uint64 pa) {
+    acquire(&kmem.lock);
+    if (page_ref[PA2REFI(pa)] == 0) {
+        panic("decrease_ref");
+    }
+    page_ref[PA2REFI(pa)]--;
+    release(&kmem.lock);
+}
+
+
+void increase_ref_unlock(uint64 pa) {
     if (page_ref[PA2REFI(pa)] == 255) {
         panic("increase_ref");
     }
     page_ref[PA2REFI(pa)]++;
 }
 
-void decrease_ref(uint64 pa) {
+void decrease_ref_unlock(uint64 pa) {
     if (page_ref[PA2REFI(pa)] == 0) {
         panic("decrease_ref");
     }

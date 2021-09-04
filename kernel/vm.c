@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -296,22 +298,24 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz) {
     pte_t *pte;
     uint64 pa, i;
     uint flags;
-    char *mem;
 
     for (i = 0; i < sz; i += PGSIZE) {
         if ((pte = walk(old, i, 0)) == 0)
             panic("uvmcopy: pte should exist");
         if ((*pte & PTE_V) == 0)
             panic("uvmcopy: page not present");
+
+        if (*pte & PTE_W) {
+            *pte = *pte & ~PTE_W;
+            *pte = *pte | PTE_COW;
+        }
+
         pa = PTE2PA(*pte);
         flags = PTE_FLAGS(*pte);
-        if ((mem = kalloc()) == 0)
-            goto err;
-        memmove(mem, (char *) pa, PGSIZE);
-        if (mappages(new, i, PGSIZE, (uint64) mem, flags) != 0) {
-            kfree(mem);
+        if (mappages(new, i, PGSIZE, (uint64) pa, flags) != 0) {
             goto err;
         }
+        increase_ref(pa);
     }
     return 0;
 
@@ -344,6 +348,12 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len) {
         pa0 = walkaddr(pagetable, va0);
         if (pa0 == 0)
             return -1;
+        if (is_shared(va0)) {
+            if (make_unique(va0) < 0) {
+                return -1;
+            }
+            pa0 = walkaddr(pagetable, va0);
+        }
         n = PGSIZE - (dstva - va0);
         if (n > len)
             n = len;
@@ -420,4 +430,45 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max) {
     } else {
         return -1;
     }
+}
+
+int is_shared(uint64 va) {
+    pagetable_t pt = myproc()->pagetable;
+    uint64 pa = walkaddr(pt, va);
+
+    if (pa == 0) {
+        return 0;
+    }
+
+    pte_t *pte = walk(pt, va, 0);
+    int flags = PTE_FLAGS(*pte);
+
+    if (flags & PTE_COW) {
+        return 1;
+    }
+
+    return 0;
+}
+
+int make_unique(uint64 va) {
+    pagetable_t pt = myproc()->pagetable;
+    uint64 pa = walkaddr(pt, va);
+
+    if (is_shared(va) == 0) {
+        return -1;
+    }
+
+    uint64 mem = (uint64) kalloc();
+    if (mem == 0) {
+        return -1;
+    }
+    memmove((char *) mem, (char *) pa, PGSIZE);
+
+    pte_t *pte = walk(pt, va, 0);
+    int flags = (PTE_FLAGS(*pte) | PTE_W) & ~PTE_COW;
+
+    uvmunmap(pt, PGROUNDDOWN(va), 1, 1);
+    *pte = PA2PTE(mem) | flags;
+
+    return 0;
 }
