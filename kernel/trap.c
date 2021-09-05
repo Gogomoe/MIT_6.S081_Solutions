@@ -66,7 +66,11 @@ usertrap(void) {
         // page fault
         uint64 va = r_stval();
 
-        if (is_shared(va) && make_unique(va) < 0) {
+        if (is_shared(va)) {
+            if (make_unique(va) < 0) {
+                goto userpanic;
+            }
+        } else {
             goto userpanic;
         }
 
