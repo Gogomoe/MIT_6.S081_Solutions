@@ -279,6 +279,9 @@ QEMUOPTS += -netdev user,id=net0,hostfwd=udp::$(FWDPORT)-:2000 -object filter-du
 QEMUOPTS += -device e1000,netdev=net0,bus=pcie.0
 endif
 
+all: $K/kernel fs.img
+
+
 qemu: $K/kernel fs.img
 	$(QEMU) $(QEMUOPTS)
 
