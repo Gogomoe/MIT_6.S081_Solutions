@@ -21,11 +21,21 @@ struct run {
 struct {
     struct spinlock lock;
     struct run *freelist;
-} kmem;
+    uint64 count;
+    char name[20];
+} kmem[NCPU];
+
+struct spinlock steal;
 
 void
 kinit() {
-    initlock(&kmem.lock, "kmem");
+    initlock(&steal, "steal_kmem");
+    for (int i = 0; i < NCPU; ++i) {
+        snprintf(kmem[i].name, 20, "kmem_%d", i);
+        initlock(&kmem[i].lock, kmem[i].name);
+        kmem[i].count = 0;
+    }
+
     freerange(end, (void *) PHYSTOP);
 }
 
@@ -53,10 +63,15 @@ kfree(void *pa) {
 
     r = (struct run *) pa;
 
-    acquire(&kmem.lock);
-    r->next = kmem.freelist;
-    kmem.freelist = r;
-    release(&kmem.lock);
+    push_off();
+    acquire(&kmem[cpuid()].lock);
+
+    r->next = kmem[cpuid()].freelist;
+    kmem[cpuid()].freelist = r;
+    kmem[cpuid()].count++;
+
+    release(&kmem[cpuid()].lock);
+    pop_off();
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -66,11 +81,58 @@ void *
 kalloc(void) {
     struct run *r;
 
-    acquire(&kmem.lock);
-    r = kmem.freelist;
-    if (r)
-        kmem.freelist = r->next;
-    release(&kmem.lock);
+    push_off();
+    acquire(&kmem[cpuid()].lock);
+
+    if (kmem[cpuid()].count == 0) {
+        acquire(&steal);
+
+        uint64 max_count = 0;
+        uint64 max_cpu = cpuid();
+        for (int i = 0; i < NCPU; ++i) {
+            if (i == cpuid()) {
+                continue;
+            }
+            if (kmem[i].count > max_count && kmem[i].count > 0) {
+                max_count = kmem[i].count;
+                max_cpu = i;
+            }
+        }
+
+        // it may deadlock
+        // 1. cpu0 steal, found cpu1 have 1 free page
+        // 2. cpu1 kalloc, remain 0 free page
+        // 3. cpu1 kalloc, acquire lock of cpu1, try to steal
+        // 4. cpu0 try to acquire lock of cpu1, cpu1 try to acquire lock of steal
+
+        if (max_count != 0 && max_cpu != cpuid()) {
+            acquire(&kmem[max_cpu].lock);
+
+            if (kmem[max_cpu].count > 0) {
+                while (kmem[cpuid()].count < kmem[max_cpu].count) {
+                    struct run *s = kmem[max_cpu].freelist;
+                    kmem[max_cpu].freelist = s->next;
+                    s->next = kmem[cpuid()].freelist;
+                    kmem[cpuid()].freelist = s;
+                    kmem[max_cpu].count--;
+                    kmem[cpuid()].count++;
+                }
+            }
+
+            release(&kmem[max_cpu].lock);
+        }
+
+        release(&steal);
+    }
+
+    r = kmem[cpuid()].freelist;
+    if (r) {
+        kmem[cpuid()].freelist = r->next;
+        kmem[cpuid()].count--;
+    }
+
+    release(&kmem[cpuid()].lock);
+    pop_off();
 
     if (r)
         memset((char *) r, 5, PGSIZE); // fill with junk
