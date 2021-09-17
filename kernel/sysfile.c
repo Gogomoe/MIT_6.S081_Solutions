@@ -304,6 +304,46 @@ sys_open(void) {
         }
     }
 
+    if (ip->type == T_SYMLINK) {
+        char target[MAXPATH];
+        struct inode *tp, *np;
+        int count = 0;
+
+        tp = ip;
+        while (tp->type == T_SYMLINK) {
+            if (count++ > 20) {
+                iunlockput(tp);
+                end_op();
+                return -1;
+            }
+
+            if (readi(tp, 0, (uint64) target, 0, MAXPATH) != MAXPATH) {
+                iunlockput(tp);
+                end_op();
+                return -1;
+            }
+
+            if ((np = namei(target)) == 0) {
+                iunlockput(tp);
+                end_op();
+                return -1;
+            }
+            iunlock(tp);
+            if (tp != ip) {
+                iput(tp);
+            }
+            ilock(np);
+            tp = np;
+        }
+
+        if (omode & O_NOFOLLOW) {
+            iunlockput(tp);
+            ilock(ip);
+        } else {
+            ip = tp;
+        }
+    }
+
     if (ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)) {
         iunlockput(ip);
         end_op();
@@ -467,3 +507,33 @@ sys_pipe(void) {
     }
     return 0;
 }
+
+int sys_symlink() {
+    char target[MAXPATH], path[MAXPATH];
+
+    if (argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0) {
+        return -1;
+    }
+
+    struct inode *ip;
+
+    begin_op();
+
+    ip = create(path, T_SYMLINK, 0, 0);
+    if (ip == 0) {
+        end_op();
+        return -1;
+    }
+
+    if (writei(ip, 0, (uint64) target, 0, MAXPATH) != MAXPATH) {
+        iunlockput(ip);
+        end_op();
+        return -1;
+    }
+
+    iunlockput(ip);
+    end_op();
+
+    return 0;
+}
+
