@@ -467,3 +467,227 @@ sys_pipe(void) {
     }
     return 0;
 }
+
+#define VMASTART 0x100000000
+#define VMASPACE 0x100000000
+
+uint64
+sys_mmap(void) {
+    uint64 addr;
+    uint64 length;
+    int prot;
+    int flags;
+    uint64 offset;
+    struct file *file;
+    struct proc *p = myproc();
+
+    if (argaddr(0, &addr) < 0) {
+        return -1;
+    }
+    if (argaddr(1, &length) < 0 || argaddr(5, &offset) < 0) {
+        return -1;
+    }
+    if (argint(2, &prot) < 0 || argint(3, &flags) < 0) {
+        return -1;
+    }
+    if (argfd(4, 0, &file) < 0) {
+        return -1;
+    }
+
+    int vmai = -1;
+    for (int i = 0; i < 16; ++i) {
+        if (!p->vmas[i].enable) {
+            vmai = i;
+            break;
+        }
+    }
+
+    if (vmai == -1) {
+        return -1;
+    }
+
+    if ((prot & PROT_READ) && !file->readable) {
+        return -1;
+    }
+    if ((prot & PROT_WRITE) && !file->writable && (flags & MAP_SHARED)) {
+        return -1;
+    }
+
+    long vmaa = VMASTART + VMASPACE * vmai;
+
+    p->vmas[vmai].enable = 1;
+    p->vmas[vmai].address = vmaa;
+    p->vmas[vmai].length = length;
+    p->vmas[vmai].offset = offset;
+    p->vmas[vmai].prot = prot;
+    p->vmas[vmai].flags = flags;
+    p->vmas[vmai].file = file;
+
+    filedup(file);
+
+    return vmaa;
+}
+
+int is_vma(uint64 va, int prot) {
+    struct proc *p = myproc();
+    uint64 vmai = (va - VMASTART) / VMASPACE;
+    if (vmai >= 16) {
+        return 0;
+    }
+    struct vma *vma = &p->vmas[vmai];
+    if (vma->enable && va - vma->address < vma->length && (vma->prot & prot) == prot) {
+        return 1;
+    }
+    return 0;
+}
+
+uint min(uint a, uint b) {
+    return a < b ? a : b;
+}
+
+int alloc_vma(uint64 va) {
+    struct proc *p = myproc();
+    uint64 vmai = (va - VMASTART) / VMASPACE;
+    if (vmai >= 16) {
+        panic("alloc_vma vmai");
+    }
+    struct vma *vma = &p->vmas[vmai];
+    if (!vma->enable || va - vma->address >= vma->length) {
+        panic("alloc_vma vma");
+    }
+
+    char *mem = kalloc();
+    if (mem == 0) {
+        return -1;
+    }
+    memset(mem, 0, PGSIZE);
+
+    if (vma->file->type != T_FILE) {
+        panic("alloc_vma file");
+    }
+    struct inode *ip = vma->file->ip;
+
+    ilock(ip);
+    uint read_offset = PGROUNDDOWN(va - vma->address) + vma->offset;
+    uint read_length = min(ip->size - read_offset, PGSIZE);
+    if (readi(ip, 0, (uint64) mem, read_offset, read_length) != read_length) {
+        iunlock(ip);
+
+        panic("alloc_vma readi");
+    }
+    iunlock(ip);
+
+    int perm = PTE_U;
+    if (vma->prot & PROT_READ) {
+        perm = perm | PTE_R;
+    }
+    if (vma->prot & PROT_WRITE) {
+        perm = perm | PTE_W;
+    }
+    mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64) mem, perm);
+
+    return 0;
+}
+
+void dealloc_vma(uint64 va, struct vma *vma) {
+    if ((va % PGSIZE) != 0) {
+        panic("dealloc_vma: not aligned");
+    }
+
+    struct proc *p = myproc();
+    struct inode *ip = vma->file->ip;
+
+    uint64 pa = walkaddr(p->pagetable, va);
+    if (pa == 0) {
+        return;
+    }
+
+    if (vma->flags & MAP_SHARED) {
+        uint write_offset = va - vma->address + vma->offset;
+        uint write_length = PGSIZE;
+
+        begin_op();
+        ilock(ip);
+        int r = writei(ip, 1, va, write_offset, write_length);
+        if (r != write_length) {
+            printf("%d\n", r);
+            panic("dealloc_vma writei");
+        }
+        iunlock(ip);
+        end_op();
+    }
+
+    uvmunmap(p->pagetable, va, 1, 1);
+}
+
+uint64 munmap(uint64 addr, uint64 length) {
+    struct proc *p = myproc();
+
+    uint64 vmai = (addr - VMASTART) / VMASPACE;
+    if (vmai >= 16) {
+        return -1;
+    }
+    struct vma *vma = &p->vmas[vmai];
+    if (!vma->enable || addr < vma->address || addr + length > vma->address + vma->length) {
+        return -1;
+    }
+    if (addr != vma->address && addr + length != vma->address + vma->length) {
+        return -1;
+    }
+
+    uint64 left;
+    uint64 right;
+
+    if (addr == vma->address && addr + length == vma->address + vma->length) {
+        left = vma->address;
+        right = PGROUNDUP(vma->address + vma->length);
+    } else if (addr == vma->address) {
+        left = vma->address;
+        right = PGROUNDDOWN(vma->address + length);
+    } else {
+        left = PGROUNDUP(vma->address + vma->length - length);
+        right = PGROUNDUP(vma->address + vma->length);
+    }
+
+    while (left < right) {
+        dealloc_vma(left, vma);
+        left += PGSIZE;
+    }
+
+    if (addr == vma->address && addr + length == vma->address + vma->length) {
+        fileclose(vma->file);
+        vma->enable = 0;
+        vma->address = 0;
+        vma->length = 0;
+        vma->offset = 0;
+        vma->prot = 0;
+        vma->flags = 0;
+        vma->file = 0;
+    } else if (addr == vma->address) {
+        uint64 old_addr = vma->address;
+        uint64 new_addr = PGROUNDDOWN(vma->address + length);
+
+        vma->length -= (new_addr - old_addr);
+        vma->offset += (new_addr - old_addr);
+        vma->address = new_addr;
+    } else {
+        uint64 old_end = vma->address + vma->length;
+        uint64 new_end = PGROUNDUP(vma->address + vma->length - length);
+
+        vma->length -= (new_end - old_end);
+    }
+
+    return 0;
+}
+
+uint64
+sys_munmap(void) {
+    uint64 addr;
+    uint64 length;
+
+    if (argaddr(0, &addr) < 0 || argaddr(1, &length) < 0) {
+        return -1;
+    }
+
+    return munmap(addr, length);
+}
