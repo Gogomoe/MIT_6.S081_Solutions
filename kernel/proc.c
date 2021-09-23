@@ -289,6 +289,19 @@ fork(void) {
             np->ofile[i] = filedup(p->ofile[i]);
     np->cwd = idup(p->cwd);
 
+    for (i = 0; i < 16; ++i) {
+        if (p->vmas[i].enable) {
+            np->vmas[i].enable = p->vmas[i].enable;
+            np->vmas[i].address = p->vmas[i].address;
+            np->vmas[i].length = p->vmas[i].length;
+            np->vmas[i].offset = p->vmas[i].offset;
+            np->vmas[i].prot = p->vmas[i].prot;
+            np->vmas[i].flags = p->vmas[i].flags;
+            np->vmas[i].file = p->vmas[i].file;
+            filedup(p->vmas[i].file);
+        }
+    }
+
     safestrcpy(np->name, p->name, sizeof(p->name));
 
     pid = np->pid;
@@ -334,6 +347,12 @@ exit(int status) {
 
     if (p == initproc)
         panic("init exiting");
+
+    for (int i = 0; i < 16; ++i) {
+        if (p->vmas[i].enable) {
+            munmap(p->vmas[i].address, p->vmas[i].length);
+        }
+    }
 
     // Close all open files.
     for (int fd = 0; fd < NOFILE; fd++) {
